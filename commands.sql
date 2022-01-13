@@ -1,9 +1,9 @@
 CREATE TABLE IF NOT EXISTS asm (
  row_no SERIAL,
- location TEXT,
- variable VARCHAR(7) DEFAULT NULL,
- command TEXT NOT NULL,
- operand TEXT, 
+ location VARCHAR(3),
+ variable VARCHAR(4) DEFAULT NULL,
+ command VARCHAR(4) NOT NULL,
+ operand VARCHAR(4), 
  indirect BOOLEAN DEFAULT FALSE
  );
 
@@ -72,9 +72,6 @@ INSERT INTO asm(variable, command, operand,indirect) VALUES
 ('DIF', 'HEX', 0   ,'FALSE' ),
 (NULL , 'END', NULL,'FALSE' );
 
--- Remove the END psuedo instruction
-DELETE FROM asm WHERE command = 'END';
-
 -- First pass (ORG, store values of variables)
 -- While loop to execute the ORG commands
 DO $$
@@ -87,10 +84,12 @@ to_start INTEGER:= (SELECT DISTINCT ON(command) row_no
 		WHERE command = 'ORG');
 
 BEGIN WHILE counter > 0 LOOP
-UPDATE asm SET location = to_hex((SELECT ('x' || '0' || operand)::bit(16)
+
+-- change operand of ORG to binary then int then back to hex
+UPDATE asm SET location = UPPER(TO_HEX((SELECT ('x' || '0' || operand)::bit(16)
 				FROM asm 
 				WHERE row_no = to_start)
-			::INT + row_no - (1 + to_start))
+			::INT + row_no - (1 + to_start)))
 			WHERE row_no > to_start;
 
 DELETE FROM asm WHERE row_no = to_start;
@@ -107,9 +106,9 @@ END $$;
 -- Replace the variables with decimals with their hexvalues 
 UPDATE asm SET command = (
  CASE 
-	WHEN substring(operand,1,1) = '-' THEN UPPER(substring(to_hex(~substring(operand,2)::INT::bit(16)::INT - 1),5))
-	ELSE 
-		UPPER(LPAD(to_hex(operand::INT),4,'0'))
+ WHEN substring(operand,1,1) = '-' THEN UPPER(substring(to_hex(~substring(operand,2)::INT::bit(16)::INT - 1),5))
+ELSE 
+	UPPER(LPAD(to_hex(operand::INT),4,'0'))
  END
  )
  WHERE command = 'DEC';
