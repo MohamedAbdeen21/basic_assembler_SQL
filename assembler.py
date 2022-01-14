@@ -1,9 +1,7 @@
 import psycopg2 as pg
 import re
 
-login = """
-
-"""
+login = open('login.txt').read()
 
 # Path to the .asm file
 file_name = "test.asm"
@@ -110,14 +108,11 @@ INSERT INTO asm(variable, command, operand,indirect) VALUES
 -- While loop to execute the ORG commands
 DO $$
 DECLARE
-counter INTEGER:= (SELECT COUNT(*) 
-		FROM asm 
-		WHERE command = 'ORG');
 to_start INTEGER:= (SELECT DISTINCT ON(command) row_no 
 		FROM asm 
 		WHERE command = 'ORG');
 
-BEGIN WHILE counter > 0 LOOP
+BEGIN WHILE (SELECT COUNT (*) FROM asm WHERE command = 'ORG') > 0 LOOP
 
 -- change operand of ORG to binary then int then back to hex
 UPDATE asm SET location = UPPER(TO_HEX((SELECT ('x' || '0' || operand)::bit(16)
@@ -128,9 +123,6 @@ UPDATE asm SET location = UPPER(TO_HEX((SELECT ('x' || '0' || operand)::bit(16)
 
 DELETE FROM asm WHERE row_no = to_start;
 
-counter := (SELECT COUNT(*) 
-		FROM asm 
-		WHERE command = 'ORG');
 to_start := (SELECT DISTINCT ON(command) row_no
 		FROM asm 
 		WHERE command = 'ORG');
