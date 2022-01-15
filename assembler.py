@@ -6,7 +6,7 @@ os.chdir('/home/mohamed/git/basic_assembler_SQL/')
 login = open('login.txt').read()
 
 # Path to the .asm file
-file_name = "test2.asm"
+file_name = "test.asm"
 
 conn = pg.connect(login)
 cur = conn.cursor()
