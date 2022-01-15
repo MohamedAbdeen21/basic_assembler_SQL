@@ -1,10 +1,12 @@
+import quopri
 import psycopg2 as pg
 import re
-
+import os
+os.chdir('/home/mohamed/git/basic_assembler_SQL/')
 login = open('login.txt').read()
 
 # Path to the .asm file
-file_name = "test.asm"
+file_name = "test2.asm"
 
 conn = pg.connect(login)
 cur = conn.cursor()
@@ -39,29 +41,46 @@ for line in asm:
 	inputs += str(tuple(line)) + ','
 
 script = f'''
+CREATE OR REPLACE FUNCTION raise_exception(text)
+RETURNS void
+language plpgsql
+AS $$
+BEGIN
+	RAISE EXCEPTION '%', $1;
+END $$;
+
+CREATE TABLE IF NOT EXISTS errors(
+row_no INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS asm (
- row_no SERIAL,
- location VARCHAR(3),
- variable VARCHAR(4) DEFAULT NULL,
- command VARCHAR(4) NOT NULL,
- operand VARCHAR(4), 
- indirect BOOLEAN DEFAULT FALSE
- );
+row_no SERIAL,
+location VARCHAR(3),
+variable VARCHAR(4) DEFAULT NULL,
+command VARCHAR(3) NOT NULL,
+result VARCHAR(4),
+operand VARCHAR(4), 
+indirect BOOLEAN DEFAULT FALSE
+);
 
 CREATE TABLE IF NOT EXISTS nmr_ins (
- command VARCHAR(3),
- hexcode VARCHAR(4)
- );
+command VARCHAR(3),
+hexcode VARCHAR(4)
+);
 
 CREATE TABLE IF NOT EXISTS mr_ins (
- command VARCHAR(3),
- indirect BOOLEAN,
- hexcode VARCHAR(1)
- );
+command VARCHAR(3),
+indirect BOOLEAN,
+hexcode VARCHAR(1)
+);
 
 DELETE FROM asm;
 DELETE FROM mr_ins;
 DELETE FROM nmr_ins;
+DELETE FROM errors;
+
+-- start the SERIAL row_no column from 1 every time instead of dropping the table each run
+ALTER SEQUENCE asm_row_no_seq RESTART WITH 1;
 
 INSERT INTO nmr_ins VALUES 
 ('CLA', 7800 ),
@@ -104,6 +123,13 @@ INSERT INTO asm(variable, command, operand,indirect) VALUES
 {inputs[:-1]}
 ;
 
+DO $$
+BEGIN
+IF (SELECT command FROM asm WHERE row_no = 1) != 'ORG' THEN 
+	SELECT raise_exception('Need an ORG command in line 1');
+END IF;
+END $$;
+
 -- First pass (ORG, store values of variables)
 -- While loop to execute the ORG commands
 DO $$
@@ -115,11 +141,18 @@ to_start INTEGER:= (SELECT DISTINCT ON(command) row_no
 BEGIN WHILE (SELECT COUNT (*) FROM asm WHERE command = 'ORG') > 0 LOOP
 
 -- change operand of ORG to binary then int then back to hex
-UPDATE asm SET location = UPPER(TO_HEX((SELECT ('x' || '0' || operand)::bit(16)
-				FROM asm 
-				WHERE row_no = to_start)
-			::INT + row_no - (1 + to_start)))
-			WHERE row_no > to_start;
+UPDATE asm SET location = 
+			LPAD(
+				UPPER(
+					TO_HEX(
+						(SELECT ('x' || LPAD(operand,4,'0'))::bit(16)
+						FROM asm 
+						WHERE row_no = to_start)
+						::INT + row_no - (1 + to_start)
+						)
+					)
+			,3,'0')
+		WHERE row_no > to_start;
 
 DELETE FROM asm WHERE row_no = to_start;
 
@@ -130,18 +163,21 @@ to_start := (SELECT DISTINCT ON(command) row_no
 END $$;
 
 -- Replace the variables with decimals with their hexvalues 
-UPDATE asm SET command = (
- CASE 
- WHEN substring(operand,1,1) = '-' THEN UPPER(substring(to_hex(~substring(operand,2)::INT::bit(16)::INT - 1),5))
-ELSE 
-	UPPER(LPAD(to_hex(operand::INT),4,'0'))
- END
- )
- WHERE command = 'DEC';
+UPDATE asm SET result = (
+			CASE WHEN substring(operand,1,1) = '-' 
+				THEN UPPER(
+					substring(
+						to_hex( ~substring(operand,2) ::INT - 1)
+						,5)
+						)
+			ELSE 
+				UPPER( LPAD( to_hex(operand::INT) ,4,'0') )
+			END)
+WHERE command = 'DEC';
 
 -- Place the hexvalues directly inplace of variables
 UPDATE asm 
-SET command = UPPER(LPAD(operand,4,'0')) 
+SET result = UPPER(LPAD(operand,4,'0')) 
 WHERE command = 'HEX';
 
 -- Second pass
@@ -152,32 +188,52 @@ FROM asm b
 WHERE a.operand || ',' = b.variable;
 
 UPDATE asm a 
-SET command = b.hexcode 
+SET result = b.hexcode 
 FROM nmr_ins b 
 WHERE a.command = b.command;
 
 UPDATE asm a 
-SET command = b.hexcode||a.operand 
+SET result = b.hexcode||a.operand 
 FROM mr_ins b 
 WHERE a.command = b.command and a.indirect = b.indirect;
 
+-- command written is not a pseudo-instruction,memory-reference nor non-memory-reference instruction,
+-- raise an error later
+INSERT INTO errors(row_no) SELECT row_no FROM asm WHERE result IS NULL;
+
 -- Create a view to show the final results in hexadecimals
 CREATE OR REPLACE VIEW hexresult AS
-SELECT location, command
+SELECT location, result
 from asm 
 ORDER BY row_no;
 
 -- Create a view to show the final results in binary
 CREATE OR REPLACE VIEW binresult AS
 SELECT ('x' || lpad(location::text,4,'0'))::bit(16) AS location,
- ('x'||command)::bit(16) AS command
+('x'||result)::bit(16) AS command
 FROM asm 
 ORDER BY row_no;
 '''
-cur.execute (script)
+
+try:
+	cur.execute (script)
+except:
+	# Raise exception when any of the length constraints in the asm table are broken
+	# or when ORG is missing from the top of the file
+	print(
+	'''The assembler has encountered an error.
+	Please make sure that the input file follows the rules of the assembly language!
+	This Error was likely caused by a missing ORG pseudo-instruction at the top of the program
+	or broken length constraints!''')
+	quit()
 
 # Write the binary result to a text file
 handle = open(f"{file_name.split('.')[0]}"+'.mc','w+')
+
+cur.execute('SELECT * FROM errors;')
+errors = cur.fetchall()
+if errors:
+	raise(Exception(f'Wrong command(s) in line(s): {sorted([i[0] for i in errors])}'))
 
 cur.execute('SELECT * FROM hexresult;')
 print('\nResults in Hexadecimal:\n')
@@ -187,7 +243,7 @@ for result in cur.fetchall():
 cur.execute('SELECT * FROM binresult;')
 print('\nResults in Binary:\n')
 for result in cur.fetchall():
-	handle.write("\t".join(result)+'\n')
+	handle.write('\t'.join(result)+'\n')
 	print(result)
 
 cur.close()
