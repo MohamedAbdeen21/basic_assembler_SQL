@@ -1,8 +1,6 @@
-import quopri
 import psycopg2 as pg
 import re
-import os
-os.chdir('/home/mohamed/git/basic_assembler_SQL/')
+
 login = open('login.txt').read()
 
 # Path to the .asm file
